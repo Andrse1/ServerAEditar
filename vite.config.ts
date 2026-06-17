@@ -11,6 +11,10 @@ export default defineConfig({
     devServer({ entry: "api/boot.ts", exclude: [/^\/(?!api\/).*$/] }),
     inspectAttr(), react()],
   server: {
+    // host: true hace que el servidor escuche en todas las interfaces de red
+    // (0.0.0.0), no solo en localhost. Asi puedes abrir la pagina desde el
+    // celular u otro equipo que este en la misma red Wi-Fi.
+    host: true,
     port: 3000,
   },
   resolve: {
