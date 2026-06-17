@@ -35,9 +35,10 @@
  *   ID 46 = nitrogeno
  *
  * ═══════════════════════════════════════════════════════════════
- * NEBULIZADOR — ID 30 (legacy, via id_grupo+valor1)
+ * NEBULIZADOR (modulo bomba) — campos con nombre (igual que CO2)
  * ═══════════════════════════════════════════════════════════════
- *   ID 30 = humedad
+ *   bomba_temperatura + bomba_humedad          -> ID 24
+ *   bomba_estado + bomba_sensores_validos       -> ID 25
  */
 
 header("Content-Type: application/json");
@@ -251,15 +252,36 @@ elseif (isset($postData['gas2_co2'])) {
     $tabla = "co2_zona2_concentracion";
 }
 
-// ── Formato legacy: id_grupo + valor1 (riego, nebulizador) ──
+// ── IDs 24-25: NEBULIZADOR (modulo bomba) ──
+// El datalogger envia campos con nombre (no id_grupo):
+//   ID 24 -> bomba_temperatura + bomba_humedad
+//   ID 25 -> bomba_estado + bomba_sensores_validos
+elseif (isset($postData['bomba_temperatura']) && isset($postData['bomba_humedad'])) {
+    insertSimple($conn, "nebulizador_temperatura", [
+        "temperatura" => floatval($postData['bomba_temperatura']),
+        "fecha_lectura" => $timestamp
+    ]);
+    $result = insertSimple($conn, "nebulizador_humedad", [
+        "humedad" => floatval($postData['bomba_humedad']),
+        "fecha_lectura" => $timestamp
+    ]);
+    $tabla = "nebulizador_temperatura + nebulizador_humedad";
+}
+elseif (isset($postData['bomba_estado']) && isset($postData['bomba_sensores_validos'])) {
+    $result = insertSimple($conn, "nebulizador_bomba", [
+        "estado" => intval($postData['bomba_estado']),
+        "sensores_validos" => intval($postData['bomba_sensores_validos']),
+        "fecha_lectura" => $timestamp
+    ]);
+    $tabla = "nebulizador_bomba";
+}
+
+// ── Formato legacy: id_grupo + valor1 (Riego, IDs 40-46) ──
 elseif (isset($postData['id_grupo'])) {
     $id_grupo = intval($postData['id_grupo']);
     $valor1   = isset($postData['valor1']) ? floatval($postData['valor1']) : 0.0;
 
     $sensorMap = [
-        // Nebulizador
-        30 => ["tabla" => "nebulizador_humedad", "campo" => "humedad"],
-        // Riego
         40 => ["tabla" => "riego_temp_suelo",    "campo" => "temperatura_suelo"],
         41 => ["tabla" => "riego_temp_ambiente", "campo" => "temperatura_ambiente"],
         42 => ["tabla" => "riego_hum_ambiente",  "campo" => "humedad_ambiente"],
