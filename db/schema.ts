@@ -3,6 +3,7 @@ import {
   mysqlEnum,
   serial,
   float,
+  int,
   timestamp,
   varchar,
   text,
@@ -81,8 +82,11 @@ export type Co2Zona2Humedad = typeof co2Zona2Humedad.$inferSelect;
 export type Co2Zona2Concentracion = typeof co2Zona2Concentracion.$inferSelect;
 
 // ============================================================================
-// PROYECTO 2: NEBULIZADOR
-// Datalogger ID: 30 (legacy - not yet connected)
+// PROYECTO 2: NEBULIZADOR (modulo bomba)
+// El datalogger envia campos con nombre (no id_grupo):
+//   ID 24 -> bomba_temperatura  -> nebulizador_temperatura
+//            bomba_humedad      -> nebulizador_humedad
+//   ID 25 -> bomba_estado + bomba_sensores_validos -> nebulizador_bomba
 // ============================================================================
 export const nebulizadorHumedad = mysqlTable("nebulizador_humedad", {
   id: serial("id").primaryKey(),
@@ -90,7 +94,40 @@ export const nebulizadorHumedad = mysqlTable("nebulizador_humedad", {
   fechaLectura: timestamp("fecha_lectura").defaultNow().notNull(),
 });
 
+export const nebulizadorTemperatura = mysqlTable("nebulizador_temperatura", {
+  id: serial("id").primaryKey(),
+  temperatura: float("temperatura").notNull(),
+  fechaLectura: timestamp("fecha_lectura").defaultNow().notNull(),
+});
+
+// Estado de la bomba reportado por el dispositivo (ID 25).
+//   estado:           1 = encendida, 0 = apagada
+//   sensoresValidos:  numero de sensores que respondieron (0-4)
+export const nebulizadorBomba = mysqlTable("nebulizador_bomba", {
+  id: serial("id").primaryKey(),
+  estado: int("estado").notNull().default(0),
+  sensoresValidos: int("sensores_validos").notNull().default(0),
+  fechaLectura: timestamp("fecha_lectura").defaultNow().notNull(),
+});
+
+// Control manual de los aspersores/nebulizadores (append-only).
+// La web inserta una nueva fila al cambiar el estado; el nodo ESP lee la
+// fila mas reciente para saber si debe operar en modo automatico o si el
+// usuario forzo el encendido/apagado manual de los aspersores.
+//   modo:       "auto"   -> el nodo decide segun humedad
+//               "manual" -> respeta el campo aspersores
+//   aspersores: 0 = apagados, 1 = encendidos (solo aplica en modo manual)
+export const nebulizadorControl = mysqlTable("nebulizador_control", {
+  id: serial("id").primaryKey(),
+  modo: mysqlEnum("modo", ["auto", "manual"]).default("auto").notNull(),
+  aspersores: int("aspersores").notNull().default(0),
+  fechaActualizacion: timestamp("fecha_actualizacion").defaultNow().notNull(),
+});
+
 export type NebulizadorHumedad = typeof nebulizadorHumedad.$inferSelect;
+export type NebulizadorTemperatura = typeof nebulizadorTemperatura.$inferSelect;
+export type NebulizadorBomba = typeof nebulizadorBomba.$inferSelect;
+export type NebulizadorControl = typeof nebulizadorControl.$inferSelect;
 
 // ============================================================================
 // PROYECTO 3: ILUMINACION (PhytoSense)

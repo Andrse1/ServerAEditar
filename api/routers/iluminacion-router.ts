@@ -2,7 +2,7 @@ import { z } from "zod";
 import { createRouter, publicQuery } from "../middleware";
 import { getDb } from "../queries/connection";
 import { iluminacionPpfd, iluminacionDli, iluminacionEspectro, iluminacionDliCanales } from "@db/schema";
-import { desc, gte, lte, and } from "drizzle-orm";
+import { desc, asc, gte, lte, and } from "drizzle-orm";
 
 export const iluminacionRouter = createRouter({
   // ── PPFD ──
@@ -134,5 +134,61 @@ export const iluminacionRouter = createRouter({
         ch0: input.ch0 ?? 0, ch1: input.ch1 ?? 0, ch2: input.ch2 ?? 0, ch3: input.ch3 ?? 0,
         ch4: input.ch4 ?? 0, ch5: input.ch5 ?? 0, ch6: input.ch6 ?? 0, ch7: input.ch7 ?? 0,
       });
+    }),
+
+  // ══════════════════════════════════════════════════════════════
+  // LECTURAS POR CICLO (ventana de tiempo) — usado por el Historial
+  // ══════════════════════════════════════════════════════════════
+  // Lecturas "transformadas" (PPFD total + foco + DLI) dentro del rango de
+  // un ciclo, en orden cronologico. Equivale al transf.csv del dispositivo.
+  lecturasTransf: publicQuery
+    .input(z.object({
+      desde: z.string().datetime().optional(),
+      hasta: z.string().datetime().optional(),
+    }))
+    .query(async ({ input }) => {
+      const db = getDb();
+      const condPpfd = [];
+      const condDli = [];
+      if (input.desde) {
+        condPpfd.push(gte(iluminacionPpfd.fechaLectura, new Date(input.desde)));
+        condDli.push(gte(iluminacionDli.fechaLectura, new Date(input.desde)));
+      }
+      if (input.hasta) {
+        condPpfd.push(lte(iluminacionPpfd.fechaLectura, new Date(input.hasta)));
+        condDli.push(lte(iluminacionDli.fechaLectura, new Date(input.hasta)));
+      }
+      const ppfd = await db.select().from(iluminacionPpfd)
+        .where(condPpfd.length > 0 ? and(...condPpfd) : undefined)
+        .orderBy(asc(iluminacionPpfd.fechaLectura));
+      const dli = await db.select().from(iluminacionDli)
+        .where(condDli.length > 0 ? and(...condDli) : undefined)
+        .orderBy(asc(iluminacionDli.fechaLectura));
+      // Las dos tablas se escriben con la misma marca de tiempo por lectura,
+      // asi que se combinan por indice.
+      return ppfd.map((p, i) => ({
+        fechaLectura: p.fechaLectura,
+        ppfd: p.ppfd,
+        focoEstado: p.focoEstado,
+        dliTotal: dli[i]?.dliTotal ?? null,
+        dliBrutoTotal: dli[i]?.dliBrutoTotal ?? null,
+      }));
+    }),
+
+  // Lecturas "crudas" (cuentas del espectro por canal) dentro del rango de un
+  // ciclo, en orden cronologico. Equivale al raw.csv del dispositivo.
+  lecturasRaw: publicQuery
+    .input(z.object({
+      desde: z.string().datetime().optional(),
+      hasta: z.string().datetime().optional(),
+    }))
+    .query(({ input }) => {
+      const db = getDb();
+      const cond = [];
+      if (input.desde) cond.push(gte(iluminacionEspectro.fechaLectura, new Date(input.desde)));
+      if (input.hasta) cond.push(lte(iluminacionEspectro.fechaLectura, new Date(input.hasta)));
+      return db.select().from(iluminacionEspectro)
+        .where(cond.length > 0 ? and(...cond) : undefined)
+        .orderBy(asc(iluminacionEspectro.fechaLectura));
     }),
 });

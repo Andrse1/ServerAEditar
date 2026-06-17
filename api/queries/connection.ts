@@ -40,6 +40,14 @@ const connOpts: any = {
   reconnect: true,
   enableKeepAlive: true,
   keepAliveInitialDelay: 10000,
+  // Zona horaria con la que mysql2 convierte las columnas de fecha/hora a
+  // objetos Date. Se fija al huso de Bogota (UTC-5, sin horario de verano)
+  // para que la hora mostrada en las graficas y tablas coincida EXACTAMENTE
+  // con la que quedo registrada en la base de datos, sin importar en que zona
+  // horaria corra el servidor (que por defecto suele ser UTC).
+  // Si el invernadero se opera desde otro huso, cambia este valor (p. ej.
+  // "-06:00", "+01:00", o "Z" para UTC).
+  timezone: "-05:00",
 };
 const connection = mysql.createConnection(connOpts);
 

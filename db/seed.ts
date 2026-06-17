@@ -2,7 +2,7 @@ import { drizzle } from "drizzle-orm/mysql2";
 import {
   co2Zona1Temperatura, co2Zona1Humedad, co2Zona1Concentracion,
   co2Zona2Temperatura, co2Zona2Humedad, co2Zona2Concentracion,
-  nebulizadorHumedad,
+  nebulizadorHumedad, nebulizadorTemperatura, nebulizadorControl,
   iluminacionPpfd, iluminacionDli, iluminacionEspectro, iluminacionDliCanales,
   riegoTempSuelo, riegoTempAmbiente, riegoHumAmbiente,
   riegoHumSuelo, riegoPotasio, riegoFosforo, riegoNitrogeno,
@@ -45,9 +45,13 @@ async function seed() {
   // ========== Nebulizador ==========
   console.log("Seeding Nebulizador...");
   const nebHum = [78, 80, 82, 85, 83, 81, 79, 77, 75, 76, 78, 80, 84, 86, 84, 82, 80, 78, 76, 77, 79, 81, 85, 83, 81, 79, 77, 78, 80, 82];
+  const nebTemp = [24.1, 24.4, 24.8, 25.3, 25.1, 24.7, 24.3, 23.9, 23.5, 23.7, 24.0, 24.5, 25.2, 25.6, 25.3, 24.9, 24.5, 24.1, 23.8, 23.9, 24.2, 24.6, 25.1, 24.8, 24.4, 24.0, 23.7, 23.9, 24.3, 24.7];
   for (let i = 0; i < 30; i++) {
     await db.insert(nebulizadorHumedad).values({ humedad: nebHum[i], fechaLectura: timestamps[i] });
+    await db.insert(nebulizadorTemperatura).values({ temperatura: nebTemp[i], fechaLectura: timestamps[i] });
   }
+  // Estado de control inicial: automatico, aspersores apagados
+  await db.insert(nebulizadorControl).values({ modo: "auto", aspersores: 0 });
 
   // ========== Iluminacion ==========
   console.log("Seeding Iluminacion...");
