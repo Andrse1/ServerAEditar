@@ -1,5 +1,7 @@
-import { useEffect, useMemo, useState, useCallback } from "react";
+import { useEffect, useMemo, useState, useCallback, useRef } from "react";
 import { trpc } from "@/providers/trpc";
+import { format } from "date-fns";
+import { es } from "date-fns/locale";
 import Layout from "@/components/Layout";
 import {
   Chart as ChartJS,
@@ -16,7 +18,7 @@ import {
 import { Line, Bar } from "react-chartjs-2";
 import { useChartColors } from "@/hooks/useChartColors";
 import {
-  RotateCcw, ChevronRight, Trash2, Pencil, Download, X,
+  RotateCcw, ChevronRight, Trash2, Pencil, Download, X, Eye, EyeOff,
 } from "lucide-react";
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, BarElement, Title, Tooltip, Legend, Filler);
@@ -83,6 +85,75 @@ function parseDec(s: string) {
   return parseFloat(String(s).trim().replace(",", ".")) || 0;
 }
 
+// ── Duracion de un ciclo: 24 h (igual que CICLO_MS del firmware) ──
+const CICLO_MS = 86400000;
+
+// ── Un ciclo se representa como una ventana de tiempo. Sus lecturas son las
+//    filas de la base de datos dentro de [inicio, fin]. ──
+interface Ciclo {
+  n: string;        // nombre del ciclo
+  i: boolean;       // interrumpido
+  inicio: string;   // ISO (inicio del ciclo)
+  fin: string;      // ISO (cierre del ciclo)
+  planta: string;   // planta activa durante el ciclo
+  config: string;   // configuracion activa durante el ciclo
+}
+
+// Genera el nombre del ciclo en el formato del dispositivo:
+// Phyto_Ciclo_DD_MM_YYYY_HHMM
+function nombreCiclo(d: Date) {
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `Phyto_Ciclo_${p(d.getDate())}_${p(d.getMonth() + 1)}_${d.getFullYear()}_${p(d.getHours())}${p(d.getMinutes())}`;
+}
+
+// Ciclos iniciales de ejemplo. Sus ventanas caen dentro de las ultimas horas
+// para que el historial muestre lecturas reales de la base de datos.
+function ciclosIniciales(): Ciclo[] {
+  const ahora = Date.now();
+  const iniA = new Date(ahora - 150 * 60000); // hace 2 h 30 m
+  const finA = new Date(ahora - 80 * 60000);  // hace 1 h 20 m
+  const iniB = new Date(ahora - 75 * 60000);  // hace 1 h 15 m
+  const finB = new Date(ahora - 10 * 60000);  // hace 10 m
+  return [
+    { n: nombreCiclo(iniB), i: true,  inicio: iniB.toISOString(), fin: finB.toISOString(), planta: "Lechuga", config: "Vegetativo" },
+    { n: nombreCiclo(iniA), i: false, inicio: iniA.toISOString(), fin: finA.toISOString(), planta: "Tomate",  config: "Floracion" },
+  ];
+}
+
+// Descarga un arreglo de objetos como archivo CSV (mismo formato que el
+// exportador general: BOM UTF-8 y comillas escapadas).
+function descargarCSV(nombre: string, filas: Record<string, unknown>[]) {
+  if (!filas || filas.length === 0) {
+    alert("No hay lecturas para descargar en este ciclo.");
+    return;
+  }
+  const headers = Object.keys(filas[0]);
+  const csvRows = [
+    headers.join(","),
+    ...filas.map((row) =>
+      headers.map((h) => {
+        const val = row[h];
+        const str = String(val ?? "");
+        return str.includes(",") || str.includes('"') ? `"${str.replace(/"/g, '""')}"` : str;
+      }).join(","),
+    ),
+  ];
+  const csv = "\uFEFF" + csvRows.join("\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = nombre;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+}
+
+// Formato de fecha para tablas
+const fmtFecha = (v: unknown) =>
+  v instanceof Date ? format(v, "dd/MM/yyyy HH:mm:ss", { locale: es }) : format(new Date(String(v)), "dd/MM/yyyy HH:mm:ss", { locale: es });
+
 // ═══════════════════════════════════════════════════════════════
 // ILUMINACION PAGE - PhytoSense-style with all 4 sub-tabs
 // ═══════════════════════════════════════════════════════════════
@@ -99,42 +170,89 @@ export default function Iluminacion() {
   const dliCanalesUltimo = trpc.iluminacion.dliCanalesUltimo.useQuery(undefined, { refetchInterval: polling ? 5000 : false });
   const espectroHistorico = trpc.iluminacion.espectroHistorico.useQuery({ limit: 30 }, { refetchInterval: polling ? 5000 : false });
 
-  // ── Current data snapshot ──
+  // ── Shared state: plantas (synced between Monitor and Plantas tabs) ──
+  const [plantas, setPlantas] = useState<Planta[]>(() => {
+    const saved = localStorage.getItem("phyto_plantas");
+    return saved ? JSON.parse(saved) : defaultPlantas;
+  });
+
+  // ── Estado del Monitor, elevado al padre para que NO se reinicie al cambiar
+  //    de pestania y para que el contador y la configuracion persistan. ──
+  const monInit = useMemo(() => {
+    try {
+      const s = localStorage.getItem("phyto_monitor");
+      if (s) return JSON.parse(s);
+    } catch { /* ignore */ }
+    return null;
+  }, []);
+  const [selPlant, setSelPlant] = useState<number>(monInit?.selPlant ?? 0);            // seleccion (desplegable)
+  const [selConfig, setSelConfig] = useState<number>(monInit?.selConfig ?? 0);          // seleccion (desplegable)
+  const [appliedPlant, setAppliedPlant] = useState<number>(monInit?.appliedPlant ?? 0); // configuracion aplicada
+  const [appliedConfig, setAppliedConfig] = useState<number>(monInit?.appliedConfig ?? 0);
+  const [cicloInicio, setCicloInicio] = useState<number>(monInit?.cicloInicio ?? Date.now()); // epoch ms
+
+  // Reloj que avanza cada segundo. Vive en el padre (siempre montado), por lo
+  // que el contador sigue corriendo aunque se cambie de pestania.
+  const [ahora, setAhora] = useState<number>(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setAhora(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  // Tiempo restante del ciclo (anclado a cicloInicio + 24 h).
+  const remainingMs = Math.max(0, cicloInicio + CICLO_MS - ahora);
+
+  // ── Shared state: ciclos (historial) — ventanas de tiempo ──
+  const [ciclos, setCiclos] = useState<Ciclo[]>(() => {
+    const saved = localStorage.getItem("phyto_ciclos_v2");
+    return saved ? JSON.parse(saved) : ciclosIniciales();
+  });
+
+  // Persistencia
+  useEffect(() => { localStorage.setItem("phyto_plantas", JSON.stringify(plantas)); }, [plantas]);
+  useEffect(() => { localStorage.setItem("phyto_ciclos_v2", JSON.stringify(ciclos)); }, [ciclos]);
+  useEffect(() => {
+    localStorage.setItem("phyto_monitor", JSON.stringify({ selPlant, selConfig, appliedPlant, appliedConfig, cicloInicio }));
+  }, [selPlant, selConfig, appliedPlant, appliedConfig, cicloInicio]);
+
+  // ── Current data snapshot (usa la configuracion APLICADA) ──
   const D = useMemo(() => {
-    const es = espectroUltimo.data?.[0];
+    const esp = espectroUltimo.data?.[0];
     const dl = dliUltimo.data?.[0];
     const pp = ppfdUltimo.data?.[0];
     const dlc = dliCanalesUltimo.data?.[0];
-    if (!es && !dl && !pp) return null;
+    if (!esp && !dl && !pp) return null;
 
-    const r = es ? [es.ch0, es.ch1, es.ch2, es.ch3, es.ch4, es.ch5, es.ch6, es.ch7] : Array(8).fill(0);
+    const cfg = plantas[appliedPlant]?.configs[appliedConfig];
+    const ocArr = cfg?.dli_ch ?? Array(8).fill(0);
+    const dliObj = ocArr.reduce((a: number, b: number) => a + b, 0);
+
+    const r = esp ? [esp.ch0, esp.ch1, esp.ch2, esp.ch3, esp.ch4, esp.ch5, esp.ch6, esp.ch7] : Array(8).fill(0);
     const dom = domCh(r);
-    const dliObj = defaultPlantas[0].configs[0].dli_ch.reduce((a, b) => a + b, 0);
     const dliTotalVal = dl ? dl.dliTotal : 0;
     const dliPct = dliObj > 0 ? Math.min((dliTotalVal / dliObj) * 100, 100) : 0;
     const dliEx = dl && dl.dliBrutoTotal > dl.dliTotal ? dl.dliBrutoTotal - dl.dliTotal : 0;
 
     return {
       s: true, // sensing
-      pl: "Lechuga", // plant name
-      cf: "Vegetativo", // config name
-      fo: pp ? pp.focoEstado === 1 : false, // foco on (focoEstado is now float in ppfd)
-      rm: 3600000, // remaining time ms
+      pl: plantas[appliedPlant]?.nombre ?? "—", // plant name (aplicada)
+      cf: cfg?.nombre ?? "—", // config name (aplicada)
+      fo: pp ? pp.focoEstado === 1 : false, // foco on
       dp: dliPct, // DLI percentage
       dt: dliTotalVal, // DLI accumulated
-      do: dliObj, // DLI objective (from plant config)
+      do: dliObj, // DLI objective (de la config aplicada)
       ex: dliEx, // excess (bruto - total)
       db: dl ? dl.dliBrutoTotal : 0, // DLI bruto total
       pp: pp ? pp.ppfd : 0, // PPFD
       r, // raw counts
-      pc: r.map(v => v * 0.8), // simulated PPFD per channel
-      dc: dlc ? [dlc.ch0, dlc.ch1, dlc.ch2, dlc.ch3, dlc.ch4, dlc.ch5, dlc.ch6, dlc.ch7] : Array(8).fill(0), // DLI per channel from dliCanales
-      oc: defaultPlantas[0].configs[0].dli_ch, // objectives per channel
+      pc: r.map((v: number) => v * 0.8), // simulated PPFD per channel
+      dc: dlc ? [dlc.ch0, dlc.ch1, dlc.ch2, dlc.ch3, dlc.ch4, dlc.ch5, dlc.ch6, dlc.ch7] : Array(8).fill(0), // DLI per channel
+      oc: ocArr, // objectives per channel (de la config aplicada)
       al: 0, // alert
       domN: dom.n, // dominant channel name
       domC: dom.c, // dominant channel color
     };
-  }, [dliUltimo.data, ppfdUltimo.data, espectroUltimo.data, dliCanalesUltimo.data]);
+  }, [dliUltimo.data, ppfdUltimo.data, espectroUltimo.data, dliCanalesUltimo.data, plantas, appliedPlant, appliedConfig]);
 
   // ── Status ──
   const sensing = !!D?.s;
@@ -147,48 +265,52 @@ export default function Iluminacion() {
     { id: "historial" as const, label: "Historial" },
   ];
 
-  // ── Shared state: plantas (synced between Monitor and Plantas tabs) ──
-  const [plantas, setPlantas] = useState<Planta[]>(() => {
-    const saved = localStorage.getItem("phyto_plantas");
-    return saved ? JSON.parse(saved) : defaultPlantas;
-  });
+  // ── Cierra el ciclo en curso y lo guarda en el historial ──
+  const cerrarCicloActual = useCallback((interrumpido: boolean) => {
+    const planta = plantas[appliedPlant]?.nombre ?? "—";
+    const config = plantas[appliedPlant]?.configs[appliedConfig]?.nombre ?? "—";
+    const inicio = new Date(cicloInicio);
+    const nuevo: Ciclo = {
+      n: nombreCiclo(inicio),
+      i: interrumpido,
+      inicio: inicio.toISOString(),
+      fin: new Date().toISOString(),
+      planta,
+      config,
+    };
+    setCiclos((prev) => [nuevo, ...prev]);
+    return { planta, config };
+  }, [plantas, appliedPlant, appliedConfig, cicloInicio]);
 
-  // ── Shared state: ciclos (historial) ──
-  const [ciclos, setCiclos] = useState<Array<{ n: string; i: boolean; a: Array<{ n: string; s: number; r: string }> }>>(() => {
-    const saved = localStorage.getItem("phyto_ciclos");
-    return saved ? JSON.parse(saved) : [
-      { n: "Phyto_Ciclo_06_01_2026", i: false, a: [
-        { n: "espectro.bmp", s: 245760, r: "/ciclos/Phyto_Ciclo_06_01_2026/espectro.bmp" },
-        { n: "datos_transf.csv", s: 12288, r: "/ciclos/Phyto_Ciclo_06_01_2026/datos_transf.csv" },
-      ]},
-      { n: "Phyto_Ciclo_05_01_2026", i: true, a: [
-        { n: "espectro.bmp", s: 180224, r: "/ciclos/Phyto_Ciclo_05_01_2026/espectro.bmp" },
-      ]},
-      { n: "Phyto_Ciclo_04_01_2026", i: false, a: [
-        { n: "espectro.bmp", s: 221184, r: "/ciclos/Phyto_Ciclo_04_01_2026/espectro.bmp" },
-        { n: "resumen.txt", s: 2048, r: "/ciclos/Phyto_Ciclo_04_01_2026/resumen.txt" },
-      ]},
-    ];
-  });
+  // Cierre automatico al completar las 24 h (igual que cerrarCiclo(false) del firmware)
+  const cierreRef = useRef(false);
+  useEffect(() => {
+    if (remainingMs > 0) { cierreRef.current = false; return; }
+    if (cierreRef.current) return;
+    cierreRef.current = true;
+    const { planta, config } = cerrarCicloActual(false);
+    setCicloInicio(Date.now());
+    show(`Ciclo completado — "${planta} / ${config}" guardado en historial`);
+  }, [remainingMs, cerrarCicloActual, show]);
 
-  // Persist
-  useEffect(() => { localStorage.setItem("phyto_plantas", JSON.stringify(plantas)); }, [plantas]);
-  useEffect(() => { localStorage.setItem("phyto_ciclos", JSON.stringify(ciclos)); }, [ciclos]);
-
-  // ── Handlers ──
-  const handleReiniciarCiclo = useCallback((planta: string, config: string) => {
-    const now = new Date();
-    const nomb = `Phyto_Ciclo_${now.getDate().toString().padStart(2, "0")}_${(now.getMonth() + 1).toString().padStart(2, "0")}_${now.getFullYear()}_${now.getHours().toString().padStart(2, "0")}${now.getMinutes().toString().padStart(2, "0")}`;
-    setCiclos(prev => [{ n: nomb, i: true, a: [
-      { n: "espectro.bmp", s: Math.floor(Math.random() * 100000) + 50000, r: `/ciclos/${nomb}/espectro.bmp` },
-      { n: "resumen_interrupcion.txt", s: 1024, r: `/ciclos/${nomb}/resumen_interrupcion.txt` },
-    ]}, ...prev]);
-    show(`Ciclo interrumpido — "${planta} / ${config}" guardado en historial`);
-  }, [show]);
-
-  const handleAplicar = useCallback((planta: string, config: string) => {
+  // ── Handlers del Monitor ──
+  // Aplicar: confirma la planta/config seleccionada como la activa. El objetivo
+  // DLI, el progreso y el estado del foco pasan a reflejar esta configuracion.
+  const handleAplicar = useCallback(() => {
+    setAppliedPlant(selPlant);
+    setAppliedConfig(selConfig);
+    const planta = plantas[selPlant]?.nombre ?? "—";
+    const config = plantas[selPlant]?.configs[selConfig]?.nombre ?? "—";
     show(`Configuracion aplicada: ${planta} / ${config}`);
-  }, [show]);
+  }, [selPlant, selConfig, plantas, show]);
+
+  // Reiniciar ciclo: cierra el ciclo en curso (marcado como interrumpido), lo
+  // archiva en el historial y arranca uno nuevo con el contador en 24 h.
+  const handleReiniciar = useCallback(() => {
+    const { planta, config } = cerrarCicloActual(true);
+    setCicloInicio(Date.now());
+    show(`Ciclo interrumpido — "${planta} / ${config}" guardado en historial`);
+  }, [cerrarCicloActual, show]);
 
   // ── Green accent ──
   const G = "var(--gr)";
@@ -227,7 +349,21 @@ export default function Iluminacion() {
         {/* Alert strip */}
         <AlertStrip data={D} />
 
-        {activeTab === "monitor" && <MonitorTab data={D} plantas={plantas} toast={show} onAplicar={handleAplicar} onReiniciarCiclo={handleReiniciarCiclo} />}
+        {activeTab === "monitor" && (
+          <MonitorTab
+            data={D}
+            plantas={plantas}
+            selPlant={selPlant}
+            setSelPlant={setSelPlant}
+            selConfig={selConfig}
+            setSelConfig={setSelConfig}
+            appliedPlant={appliedPlant}
+            appliedConfig={appliedConfig}
+            remainingMs={remainingMs}
+            onAplicar={handleAplicar}
+            onReiniciar={handleReiniciar}
+          />
+        )}
         {activeTab === "espectro" && <EspectroTab data={D} espectroData={espectroHistorico.data} />}
         {activeTab === "plantas" && <PlantasTab plantas={plantas} setPlantas={setPlantas} toast={show} />}
         {activeTab === "historial" && <HistorialTab ciclos={ciclos} setCiclos={setCiclos} toast={show} />}
@@ -273,50 +409,28 @@ function AlertStrip({ data }: { data: any }) {
 function MonitorTab({
   data,
   plantas,
-  toast: _toast,
+  selPlant,
+  setSelPlant,
+  selConfig,
+  setSelConfig,
+  appliedPlant,
+  appliedConfig,
+  remainingMs,
   onAplicar,
-  onReiniciarCiclo,
+  onReiniciar,
 }: {
   data: any;
   plantas: Planta[];
-  toast?: (msg: string, color?: string) => void;
-  onAplicar?: (planta: string, config: string) => void;
-  onReiniciarCiclo?: (planta: string, config: string) => void;
+  selPlant: number;
+  setSelPlant: (n: number) => void;
+  selConfig: number;
+  setSelConfig: (n: number) => void;
+  appliedPlant: number;
+  appliedConfig: number;
+  remainingMs: number;
+  onAplicar?: () => void;
+  onReiniciar?: () => void;
 }) {
-  const [selectedPlant, setSelectedPlant] = useState(0);
-  const [selectedConfig, setSelectedConfig] = useState(0);
-  const [remainingMs, setRemainingMs] = useState(3600000); // 1 hora en ms
-  const [cycleRunning, setCycleRunning] = useState(true);
-
-  // Countdown real
-  useEffect(() => {
-    if (!cycleRunning) return;
-    const interval = setInterval(() => {
-      setRemainingMs(prev => {
-        if (prev <= 1000) {
-          setCycleRunning(false);
-          return 0;
-        }
-        return prev - 1000;
-      });
-    }, 1000);
-    return () => clearInterval(interval);
-  }, [cycleRunning]);
-
-  const handleReiniciar = () => {
-    const pName = currentPlant?.nombre ?? "";
-    const cName = currentCfg?.nombre ?? "";
-    onReiniciarCiclo?.(pName, cName);
-    setRemainingMs(3600000);
-    setCycleRunning(true);
-  };
-
-  const handleAplicar = () => {
-    const pName = currentPlant?.nombre ?? "";
-    const cName = currentCfg?.nombre ?? "";
-    onAplicar?.(pName, cName);
-  };
-
   const d = data;
   const focoOn = d?.fo ?? false;
   const dpct = d ? Math.min(d.dp, 100) : 0;
@@ -329,8 +443,16 @@ function MonitorTab({
   const dom = domCh(r);
   const al = d?.al ?? 0;
 
-  const currentPlant = plantas[selectedPlant];
-  const currentCfg = currentPlant?.configs[selectedConfig];
+  // Planta seleccionada en el desplegable (configuracion pendiente de aplicar)
+  const plantaSel = plantas[selPlant];
+  // Planta/config APLICADA (la que rige el objetivo, el progreso y el foco)
+  const currentPlant = plantas[appliedPlant];
+  const currentCfg = currentPlant?.configs[appliedConfig];
+  // Hay cambios sin aplicar?
+  const sinAplicar = selPlant !== appliedPlant || selConfig !== appliedConfig;
+
+  // Objetivo DLI de la configuracion seleccionada (para previsualizar antes de aplicar)
+  const objetivoSel = plantaSel?.configs[selConfig]?.dli_ch.reduce((a, b) => a + b, 0) ?? 0;
 
   return (
     <>
@@ -360,8 +482,8 @@ function MonitorTab({
             <div className="flex items-center gap-2">
               <span className="w-16 shrink-0 text-xs uppercase tracking-wider text-[var(--mu)]">Planta</span>
               <select
-                value={selectedPlant}
-                onChange={(e) => { setSelectedPlant(Number(e.target.value)); setSelectedConfig(0); }}
+                value={selPlant}
+                onChange={(e) => { setSelPlant(Number(e.target.value)); setSelConfig(0); }}
                 className="flex-1 rounded-md border border-[var(--gr2)]/20 bg-[var(--s2)] px-2 py-1.5 text-sm text-[var(--tx)] outline-none"
               >
                 {plantas.map((p, i) => <option key={i} value={i}>{p.nombre}</option>)}
@@ -370,22 +492,27 @@ function MonitorTab({
             <div className="flex items-center gap-2">
               <span className="w-16 shrink-0 text-xs uppercase tracking-wider text-[var(--mu)]">Config</span>
               <select
-                value={selectedConfig}
-                onChange={(e) => setSelectedConfig(Number(e.target.value))}
+                value={selConfig}
+                onChange={(e) => setSelConfig(Number(e.target.value))}
                 className="flex-1 rounded-md border border-[var(--gr2)]/20 bg-[var(--s2)] px-2 py-1.5 text-sm text-[var(--tx)] outline-none"
               >
-                {currentPlant?.configs.map((c, i) => (
+                {plantaSel?.configs.map((c, i) => (
                   <option key={i} value={i}>{c.nombre} ({c.dli_ch.reduce((a, b) => a + b, 0).toFixed(2)})</option>
                 ))}
               </select>
             </div>
             {/* Aplicar: centrado y largo */}
             <button
-              onClick={handleAplicar}
+              onClick={() => onAplicar?.()}
               className="mx-auto mt-2 w-3/4 rounded-lg border border-[var(--gr2)]/30 bg-[var(--gr-lt)] py-2.5 text-sm font-bold uppercase tracking-wider text-[var(--gr)] transition-all hover:bg-[var(--gr2)]/20 active:scale-[0.98]"
             >
               Aplicar
             </button>
+            {sinAplicar && (
+              <p className="text-center text-[11px] font-medium text-amber-500">
+                Cambios sin aplicar (objetivo {objetivoSel.toFixed(2)})
+              </p>
+            )}
           </div>
 
           {/* Remaining time */}
@@ -396,7 +523,7 @@ function MonitorTab({
 
           {/* Reiniciar ciclo */}
           <button
-            onClick={handleReiniciar}
+            onClick={() => onReiniciar?.()}
             className="mt-3 inline-flex items-center gap-1.5 rounded-lg border border-[var(--gr2)]/20 bg-[var(--s2)] px-4 py-2 text-xs font-bold uppercase tracking-wider text-[var(--gr)] transition-all hover:bg-[var(--gr-lt)]"
           >
             <RotateCcw className="h-3 w-3" /> Reiniciar ciclo
@@ -769,30 +896,46 @@ function PlantasTab({
 // ═══════════════════════════════════════════════════════════════
 function HistorialTab({
   ciclos,
-  setCiclos: _setCiclos,
+  setCiclos,
   toast,
 }: {
-  ciclos: Array<{ n: string; i: boolean; a: Array<{ n: string; s: number; r: string }> }>;
-  setCiclos: React.Dispatch<React.SetStateAction<Array<{ n: string; i: boolean; a: Array<{ n: string; s: number; r: string }> }>>>;
+  ciclos: Ciclo[];
+  setCiclos: React.Dispatch<React.SetStateAction<Ciclo[]>>;
   toast: (msg: string, color?: string) => void;
 }) {
   const [desde, setDesde] = useState("");
   const [hasta, setHasta] = useState("");
+  const [aplDesde, setAplDesde] = useState("");
+  const [aplHasta, setAplHasta] = useState("");
   const [soloInter, setSoloInter] = useState(false);
-  const [expanded, setExpanded] = useState<Set<number>>(new Set());
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [refreshKey, setRefreshKey] = useState(0);
 
-  const toggleExpand = (idx: number) => {
-    setExpanded(prev => {
-      const next = new Set(prev);
-      if (next.has(idx)) next.delete(idx); else next.add(idx);
-      return next;
-    });
-  };
+  const keyOf = (c: Ciclo) => `${c.n}|${c.inicio}`;
+  const toggleExpand = (k: string) => setExpanded(prev => {
+    const next = new Set(prev);
+    if (next.has(k)) next.delete(k); else next.add(k);
+    return next;
+  });
 
+  const desdeMs = aplDesde ? new Date(aplDesde + "T00:00:00").getTime() : null;
+  const hastaMs = aplHasta ? new Date(aplHasta + "T23:59:59").getTime() : null;
   const filtered = ciclos.filter(c => {
     if (soloInter && !c.i) return false;
+    const ini = new Date(c.inicio).getTime();
+    const fin = new Date(c.fin).getTime();
+    if (desdeMs != null && fin < desdeMs) return false;
+    if (hastaMs != null && ini > hastaMs) return false;
     return true;
   });
+
+  const borrarCiclo = (c: Ciclo) => {
+    if (!confirm(`¿Borrar ${c.n}?`)) return;
+    setCiclos(prev => prev.filter(x => keyOf(x) !== keyOf(c)));
+    toast("🗑 Ciclo borrado", "var(--re)");
+  };
+
+  const fmtCorta = (iso: string) => format(new Date(iso), "dd/MM HH:mm", { locale: es });
 
   return (
     <>
@@ -808,14 +951,16 @@ function HistorialTab({
           <input type="date" value={hasta} onChange={e => setHasta(e.target.value)}
             className="w-36 rounded-md border border-[var(--bd2)] bg-[var(--s2)] px-3 py-2 text-xs text-[var(--tx)] outline-none" />
         </div>
-        <button className="rounded-lg bg-emerald-500 px-4 py-2 text-sm font-bold uppercase tracking-wider text-white hover:bg-emerald-600">
+        <button onClick={() => { setAplDesde(desde); setAplHasta(hasta); }}
+          className="rounded-lg bg-emerald-500 px-4 py-2 text-sm font-bold uppercase tracking-wider text-white hover:bg-emerald-600">
           Filtrar
         </button>
-        <button onClick={() => { setDesde(""); setHasta(""); }}
+        <button onClick={() => { setDesde(""); setHasta(""); setAplDesde(""); setAplHasta(""); }}
           className="rounded-lg border border-[var(--bd2)] bg-[var(--s2)] px-3 py-2 text-sm font-bold uppercase tracking-wider text-[var(--mu)] hover:bg-[var(--s3)]">
           Limpiar
         </button>
-        <button className="ml-1 rounded-lg bg-emerald-500 px-4 py-2 text-sm font-bold uppercase tracking-wider text-white hover:bg-emerald-600">
+        <button onClick={() => setRefreshKey(k => k + 1)}
+          className="ml-1 rounded-lg bg-emerald-500 px-4 py-2 text-sm font-bold uppercase tracking-wider text-white hover:bg-emerald-600">
           ↻ Actualizar
         </button>
         <button onClick={() => setSoloInter(!soloInter)}
@@ -829,45 +974,139 @@ function HistorialTab({
 
       {/* Cycle list */}
       <div className="flex flex-col gap-2.5">
-        {filtered.map((ciclo, idx) => (
-          <div key={idx} className="overflow-hidden rounded-xl border border-[var(--bd)] bg-[var(--su)]">
-            <div className="flex cursor-pointer items-center gap-3 px-4 py-3 hover:bg-[var(--s2)]" onClick={() => toggleExpand(idx)}>
-              <span className="flex-1 text-xs font-bold">{ciclo.n}</span>
-              {ciclo.i && <span className="rounded bg-red-500/10 px-2 py-0.5 text-xs font-bold text-red-500 border border-red-500/20">interrumpido</span>}
-              <button onClick={(e) => { e.stopPropagation(); if (confirm(`¿Borrar ${ciclo.n}?`)) toast("🗑 Borrado"); }}
-                className="rounded border border-red-400/20 bg-red-500/5 px-2 py-0.5 text-xs text-red-500 hover:bg-red-500/10">
-                <Trash2 className="h-3 w-3" />
-              </button>
-              <ChevronRight className={`h-4 w-4 text-[var(--mu)] transition-transform duration-200 ${expanded.has(idx) ? "rotate-90" : ""}`} />
-            </div>
-            {expanded.has(idx) && (
-              <div className="border-t border-[var(--bd)] px-4 pb-3 pt-2">
-                {ciclo.a.length === 0 ? (
-                  <div className="py-3 text-xs text-[var(--mu)]">Sin archivos aún</div>
-                ) : (
-                  ciclo.a.map((a, ai) => (
-                    <div key={ai} className="flex items-center gap-2 border-b border-[var(--bd)]/50 py-2 last:border-0">
-                      <span className="text-sm">{a.n.endsWith(".bmp") ? "🖼" : a.n.includes("transf") ? "📊" : "📄"}</span>
-                      <span className="flex-1 text-xs">{a.n}</span>
-                      <span className="mr-2 text-xs text-[var(--mu)]">{(a.s / 1024).toFixed(1)} KB</span>
-                      <button onClick={() => window.open(`/dl?ruta=${encodeURIComponent(a.r)}`, "_blank")}
-                        className="rounded border border-[var(--bd2)] bg-emerald-500/5 px-2 py-0.5 text-xs text-emerald-600 hover:bg-emerald-500/10">
-                        <Download className="h-3 w-3" />
-                      </button>
-                      <button onClick={() => { if (confirm(`¿Borrar ${a.n}?`)) toast("🗑 Borrado"); }}
-                        className="rounded border border-red-400/20 bg-red-500/5 px-2 py-0.5 text-xs text-red-500 hover:bg-red-500/10">
-                        <X className="h-3 w-3" />
-                      </button>
-                    </div>
-                  ))
-                )}
+        {filtered.map((ciclo) => {
+          const k = keyOf(ciclo);
+          const abierto = expanded.has(k);
+          return (
+            <div key={k} className="overflow-hidden rounded-xl border border-[var(--bd)] bg-[var(--su)]">
+              <div className="flex cursor-pointer items-center gap-3 px-4 py-3 hover:bg-[var(--s2)]" onClick={() => toggleExpand(k)}>
+                <div className="flex-1">
+                  <div className="text-xs font-bold">{ciclo.n}</div>
+                  <div className="text-[11px] text-[var(--mu)]">{ciclo.planta} / {ciclo.config} · {fmtCorta(ciclo.inicio)} → {fmtCorta(ciclo.fin)}</div>
+                </div>
+                {ciclo.i
+                  ? <span className="rounded bg-red-500/10 px-2 py-0.5 text-xs font-bold text-red-500 border border-red-500/20">interrumpido</span>
+                  : <span className="rounded bg-emerald-500/10 px-2 py-0.5 text-xs font-bold text-emerald-500 border border-emerald-500/20">completado</span>}
+                <button onClick={(e) => { e.stopPropagation(); borrarCiclo(ciclo); }}
+                  className="rounded border border-red-400/20 bg-red-500/5 px-2 py-0.5 text-xs text-red-500 hover:bg-red-500/10">
+                  <Trash2 className="h-3 w-3" />
+                </button>
+                <ChevronRight className={`h-4 w-4 text-[var(--mu)] transition-transform duration-200 ${abierto ? "rotate-90" : ""}`} />
               </div>
-            )}
-          </div>
-        ))}
+              {abierto && <CicloDetalle key={`${k}-${refreshKey}`} ciclo={ciclo} />}
+            </div>
+          );
+        })}
         {filtered.length === 0 && <div className="py-8 text-center text-sm text-[var(--mu)]">Sin ciclos en ese rango</div>}
       </div>
     </>
+  );
+}
+
+// ── Tabla compacta y desplazable para previsualizar lecturas ──
+function TablaLecturas({ filas }: { filas: Record<string, unknown>[] }) {
+  const headers = Object.keys(filas[0]);
+  return (
+    <div className="mt-2 max-h-72 overflow-auto rounded-lg border border-[var(--bd)]">
+      <table className="w-full text-xs">
+        <thead className="sticky top-0 bg-[var(--s2)]">
+          <tr>
+            {headers.map(h => (
+              <th key={h} className="whitespace-nowrap px-2 py-1.5 text-left font-bold uppercase tracking-wider text-[var(--mu)]">{h}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {filas.map((f, i) => (
+            <tr key={i} className="border-t border-[var(--bd)]/50 hover:bg-[var(--s2)]">
+              {headers.map(h => (
+                <td key={h} className="whitespace-nowrap px-2 py-1 font-mono">{String(f[h])}</td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// ── Un conjunto de lecturas de un ciclo (ver tabla / descargar CSV) ──
+function Dataset({ icon, titulo, filas, loading, nombreArchivo }: {
+  icon: string;
+  titulo: string;
+  filas: Record<string, unknown>[];
+  loading: boolean;
+  nombreArchivo: string;
+}) {
+  const [ver, setVer] = useState(false);
+  const vacio = !loading && filas.length === 0;
+  return (
+    <div className="border-b border-[var(--bd)]/50 py-2 last:border-0">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-sm">{icon}</span>
+        <span className="flex-1 text-xs font-medium">{titulo}</span>
+        <span className="mr-1 text-xs text-[var(--mu)]">{loading ? "…" : `${filas.length} lecturas`}</span>
+        <button onClick={() => setVer(v => !v)} disabled={loading || vacio}
+          className="inline-flex items-center gap-1 rounded border border-[var(--bd2)] bg-[var(--s2)] px-2 py-0.5 text-xs text-[var(--mu)] transition-all hover:text-[var(--tx)] disabled:cursor-not-allowed disabled:opacity-40">
+          {ver ? <><EyeOff className="h-3 w-3" /> Ocultar</> : <><Eye className="h-3 w-3" /> Ver</>}
+        </button>
+        <button onClick={() => descargarCSV(nombreArchivo, filas)} disabled={loading || vacio}
+          className="inline-flex items-center gap-1 rounded border border-[var(--bd2)] bg-emerald-500/5 px-2 py-0.5 text-xs text-emerald-600 transition-all hover:bg-emerald-500/10 disabled:cursor-not-allowed disabled:opacity-40">
+          <Download className="h-3 w-3" /> CSV
+        </button>
+      </div>
+      {ver && filas.length > 0 && <TablaLecturas filas={filas} />}
+    </div>
+  );
+}
+
+// ── Detalle de un ciclo: lee las lecturas de la BD dentro de su ventana ──
+function CicloDetalle({ ciclo }: { ciclo: Ciclo }) {
+  const transf = trpc.iluminacion.lecturasTransf.useQuery({ desde: ciclo.inicio, hasta: ciclo.fin });
+  const raw = trpc.iluminacion.lecturasRaw.useQuery({ desde: ciclo.inicio, hasta: ciclo.fin });
+
+  const transfFilas = useMemo(() => (transf.data ?? []).map((d: any) => ({
+    "Fecha/Hora": fmtFecha(d.fechaLectura),
+    "PPFD (umol/m2/s)": Number(d.ppfd).toFixed(4),
+    "Foco": d.focoEstado === 1 ? "ON" : "OFF",
+    "DLI total (mol/m2/dia)": d.dliTotal != null ? Number(d.dliTotal).toFixed(10) : "",
+    "DLI bruto (mol/m2/dia)": d.dliBrutoTotal != null ? Number(d.dliBrutoTotal).toFixed(10) : "",
+  })), [transf.data]);
+
+  const rawFilas = useMemo(() => (raw.data ?? []).map((d: any) => ({
+    "Fecha/Hora": fmtFecha(d.fechaLectura),
+    [CN[0]]: d.ch0, [CN[1]]: d.ch1, [CN[2]]: d.ch2, [CN[3]]: d.ch3,
+    [CN[4]]: d.ch4, [CN[5]]: d.ch5, [CN[6]]: d.ch6, [CN[7]]: d.ch7,
+  })), [raw.data]);
+
+  const inicio = new Date(ciclo.inicio);
+  const fin = new Date(ciclo.fin);
+  const durMs = Math.max(0, fin.getTime() - inicio.getTime());
+
+  const cargando = transf.isLoading || raw.isLoading;
+  const sinLecturas = !cargando && transfFilas.length === 0 && rawFilas.length === 0;
+
+  return (
+    <div className="border-t border-[var(--bd)] px-4 pb-3 pt-2">
+      {/* Resumen del ciclo */}
+      <div className="mb-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-[var(--mu)]">
+        <span>Planta: <b className="text-[var(--tx)]">{ciclo.planta}</b></span>
+        <span>Config: <b className="text-[var(--tx)]">{ciclo.config}</b></span>
+        <span>{fmtFecha(inicio)} → {fmtFecha(fin)}</span>
+        <span>Duracion: <b className="text-[var(--tx)]">{fmtMs(durMs)}</b></span>
+      </div>
+
+      {cargando ? (
+        <div className="py-3 text-xs text-[var(--mu)]">Cargando lecturas…</div>
+      ) : sinLecturas ? (
+        <div className="py-3 text-xs text-[var(--mu)]">Sin lecturas registradas en este ciclo.</div>
+      ) : (
+        <>
+          <Dataset icon="📊" titulo="Lecturas transformadas (PPFD / foco / DLI)" filas={transfFilas} loading={transf.isLoading} nombreArchivo={`${ciclo.n}_transf.csv`} />
+          <Dataset icon="🎚" titulo="Lecturas crudas (cuentas del espectro por canal)" filas={rawFilas} loading={raw.isLoading} nombreArchivo={`${ciclo.n}_raw.csv`} />
+        </>
+      )}
+    </div>
   );
 }
 
