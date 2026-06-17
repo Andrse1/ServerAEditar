@@ -1,0 +1,800 @@
+diff --git a/api/queries/connection.ts b/api/queries/connection.ts
+index 3aec975..cd8a264 100644
+--- a/api/queries/connection.ts
++++ b/api/queries/connection.ts
+@@ -40,14 +40,20 @@ const connOpts: any = {
+   reconnect: true,
+   enableKeepAlive: true,
+   keepAliveInitialDelay: 10000,
+-  // Zona horaria con la que mysql2 convierte las columnas de fecha/hora a
+-  // objetos Date. Se fija al huso de Bogota (UTC-5, sin horario de verano)
+-  // para que la hora mostrada en las graficas y tablas coincida EXACTAMENTE
+-  // con la que quedo registrada en la base de datos, sin importar en que zona
+-  // horaria corra el servidor (que por defecto suele ser UTC).
+-  // Si el invernadero se opera desde otro huso, cambia este valor (p. ej.
+-  // "-06:00", "+01:00", o "Z" para UTC).
+-  timezone: "-05:00",
++  // Devuelve las columnas de fecha/hora (TIMESTAMP/DATETIME) como CADENAS
++  // literales "YYYY-MM-DD HH:mm:ss" tal cual estan guardadas en la base de
++  // datos, en lugar de convertirlas a objetos Date.
++  //
++  // Esto es CLAVE para que la hora mostrada en las graficas y tablas sea
++  // EXACTAMENTE la que quedo registrada en la BD. Si dejamos que mysql2 las
++  // convierta a Date, esa conversion depende de la zona horaria del servidor
++  // (que suele ser UTC) y luego el navegador la vuelve a re-localizar al
++  // formatear, lo que producia el desfase de varias horas. Al transportar la
++  // marca de tiempo como texto plano no se aplica ninguna conversion de huso
++  // en todo el recorrido (BD -> servidor -> navegador): lo que esta en la BD
++  // es exactamente lo que se ve. El esquema marca estas columnas con
++  // `mode: "string"` para que Drizzle pase la cadena sin tocarla.
++  dateStrings: true,
+ };
+ const connection = mysql.createConnection(connOpts);
+ 
+diff --git a/api/routers/co2-router.ts b/api/routers/co2-router.ts
+index d04d48d..72d33e1 100644
+--- a/api/routers/co2-router.ts
++++ b/api/routers/co2-router.ts
+@@ -33,12 +33,12 @@ function ultimo(tabla: any, campoFecha: any) {
+ 
+ function rango(tabla: any, campoFecha: any) {
+   return publicQuery
+-    .input(z.object({ desde: z.string().datetime().optional(), hasta: z.string().datetime().optional() }))
++    .input(z.object({ desde: z.string().optional(), hasta: z.string().optional() }))
+     .mutation(({ input }: { input: { desde?: string; hasta?: string } }) => {
+       const db = getDb();
+       const conditions = [];
+-      if (input.desde) conditions.push(gte(campoFecha, new Date(input.desde)));
+-      if (input.hasta) conditions.push(lte(campoFecha, new Date(input.hasta)));
++      if (input.desde) conditions.push(gte(campoFecha, input.desde));
++      if (input.hasta) conditions.push(lte(campoFecha, input.hasta));
+       return db.select().from(tabla)
+         .where(conditions.length > 0 ? and(...conditions) : undefined)
+         .orderBy(desc(campoFecha));
+diff --git a/api/routers/iluminacion-router.ts b/api/routers/iluminacion-router.ts
+index 440a650..ccbdddb 100644
+--- a/api/routers/iluminacion-router.ts
++++ b/api/routers/iluminacion-router.ts
+@@ -21,12 +21,12 @@ export const iluminacionRouter = createRouter({
+     return db.select().from(iluminacionPpfd).orderBy(desc(iluminacionPpfd.fechaLectura)).limit(50);
+   }),
+   ppfdRango: publicQuery
+-    .input(z.object({ desde: z.string().datetime().optional(), hasta: z.string().datetime().optional() }))
++    .input(z.object({ desde: z.string().optional(), hasta: z.string().optional() }))
+     .mutation(({ input }) => {
+       const db = getDb();
+       const conditions = [];
+-      if (input.desde) conditions.push(gte(iluminacionPpfd.fechaLectura, new Date(input.desde)));
+-      if (input.hasta) conditions.push(lte(iluminacionPpfd.fechaLectura, new Date(input.hasta)));
++      if (input.desde) conditions.push(gte(iluminacionPpfd.fechaLectura, input.desde));
++      if (input.hasta) conditions.push(lte(iluminacionPpfd.fechaLectura, input.hasta));
+       return db.select().from(iluminacionPpfd).where(conditions.length > 0 ? and(...conditions) : undefined).orderBy(desc(iluminacionPpfd.fechaLectura));
+     }),
+   ppfdInsertar: publicQuery
+@@ -52,12 +52,12 @@ export const iluminacionRouter = createRouter({
+     return db.select().from(iluminacionDli).orderBy(desc(iluminacionDli.fechaLectura)).limit(50);
+   }),
+   dliRango: publicQuery
+-    .input(z.object({ desde: z.string().datetime().optional(), hasta: z.string().datetime().optional() }))
++    .input(z.object({ desde: z.string().optional(), hasta: z.string().optional() }))
+     .mutation(({ input }) => {
+       const db = getDb();
+       const conditions = [];
+-      if (input.desde) conditions.push(gte(iluminacionDli.fechaLectura, new Date(input.desde)));
+-      if (input.hasta) conditions.push(lte(iluminacionDli.fechaLectura, new Date(input.hasta)));
++      if (input.desde) conditions.push(gte(iluminacionDli.fechaLectura, input.desde));
++      if (input.hasta) conditions.push(lte(iluminacionDli.fechaLectura, input.hasta));
+       return db.select().from(iluminacionDli).where(conditions.length > 0 ? and(...conditions) : undefined).orderBy(desc(iluminacionDli.fechaLectura));
+     }),
+   dliInsertar: publicQuery
+@@ -83,12 +83,12 @@ export const iluminacionRouter = createRouter({
+     return db.select().from(iluminacionEspectro).orderBy(desc(iluminacionEspectro.fechaLectura)).limit(50);
+   }),
+   espectroRango: publicQuery
+-    .input(z.object({ desde: z.string().datetime().optional(), hasta: z.string().datetime().optional() }))
++    .input(z.object({ desde: z.string().optional(), hasta: z.string().optional() }))
+     .mutation(({ input }) => {
+       const db = getDb();
+       const conditions = [];
+-      if (input.desde) conditions.push(gte(iluminacionEspectro.fechaLectura, new Date(input.desde)));
+-      if (input.hasta) conditions.push(lte(iluminacionEspectro.fechaLectura, new Date(input.hasta)));
++      if (input.desde) conditions.push(gte(iluminacionEspectro.fechaLectura, input.desde));
++      if (input.hasta) conditions.push(lte(iluminacionEspectro.fechaLectura, input.hasta));
+       return db.select().from(iluminacionEspectro).where(conditions.length > 0 ? and(...conditions) : undefined).orderBy(desc(iluminacionEspectro.fechaLectura));
+     }),
+   espectroInsertar: publicQuery
+@@ -143,20 +143,20 @@ export const iluminacionRouter = createRouter({
+   // un ciclo, en orden cronologico. Equivale al transf.csv del dispositivo.
+   lecturasTransf: publicQuery
+     .input(z.object({
+-      desde: z.string().datetime().optional(),
+-      hasta: z.string().datetime().optional(),
++      desde: z.string().optional(),
++      hasta: z.string().optional(),
+     }))
+     .query(async ({ input }) => {
+       const db = getDb();
+       const condPpfd = [];
+       const condDli = [];
+       if (input.desde) {
+-        condPpfd.push(gte(iluminacionPpfd.fechaLectura, new Date(input.desde)));
+-        condDli.push(gte(iluminacionDli.fechaLectura, new Date(input.desde)));
++        condPpfd.push(gte(iluminacionPpfd.fechaLectura, input.desde));
++        condDli.push(gte(iluminacionDli.fechaLectura, input.desde));
+       }
+       if (input.hasta) {
+-        condPpfd.push(lte(iluminacionPpfd.fechaLectura, new Date(input.hasta)));
+-        condDli.push(lte(iluminacionDli.fechaLectura, new Date(input.hasta)));
++        condPpfd.push(lte(iluminacionPpfd.fechaLectura, input.hasta));
++        condDli.push(lte(iluminacionDli.fechaLectura, input.hasta));
+       }
+       const ppfd = await db.select().from(iluminacionPpfd)
+         .where(condPpfd.length > 0 ? and(...condPpfd) : undefined)
+@@ -179,14 +179,14 @@ export const iluminacionRouter = createRouter({
+   // ciclo, en orden cronologico. Equivale al raw.csv del dispositivo.
+   lecturasRaw: publicQuery
+     .input(z.object({
+-      desde: z.string().datetime().optional(),
+-      hasta: z.string().datetime().optional(),
++      desde: z.string().optional(),
++      hasta: z.string().optional(),
+     }))
+     .query(({ input }) => {
+       const db = getDb();
+       const cond = [];
+-      if (input.desde) cond.push(gte(iluminacionEspectro.fechaLectura, new Date(input.desde)));
+-      if (input.hasta) cond.push(lte(iluminacionEspectro.fechaLectura, new Date(input.hasta)));
++      if (input.desde) cond.push(gte(iluminacionEspectro.fechaLectura, input.desde));
++      if (input.hasta) cond.push(lte(iluminacionEspectro.fechaLectura, input.hasta));
+       return db.select().from(iluminacionEspectro)
+         .where(cond.length > 0 ? and(...cond) : undefined)
+         .orderBy(asc(iluminacionEspectro.fechaLectura));
+diff --git a/api/routers/nebulizador-router.ts b/api/routers/nebulizador-router.ts
+index 84bf80b..19d968c 100644
+--- a/api/routers/nebulizador-router.ts
++++ b/api/routers/nebulizador-router.ts
+@@ -24,14 +24,14 @@ export const nebulizadorRouter = createRouter({
+ 
+   humedadRango: publicQuery
+     .input(z.object({
+-      desde: z.string().datetime().optional(),
+-      hasta: z.string().datetime().optional(),
++      desde: z.string().optional(),
++      hasta: z.string().optional(),
+     }))
+     .mutation(({ input }) => {
+       const db = getDb();
+       const conditions = [];
+-      if (input.desde) conditions.push(gte(nebulizadorHumedad.fechaLectura, new Date(input.desde)));
+-      if (input.hasta) conditions.push(lte(nebulizadorHumedad.fechaLectura, new Date(input.hasta)));
++      if (input.desde) conditions.push(gte(nebulizadorHumedad.fechaLectura, input.desde));
++      if (input.hasta) conditions.push(lte(nebulizadorHumedad.fechaLectura, input.hasta));
+       return db.select().from(nebulizadorHumedad)
+         .where(conditions.length > 0 ? and(...conditions) : undefined)
+         .orderBy(desc(nebulizadorHumedad.fechaLectura));
+@@ -69,14 +69,14 @@ export const nebulizadorRouter = createRouter({
+ 
+   temperaturaRango: publicQuery
+     .input(z.object({
+-      desde: z.string().datetime().optional(),
+-      hasta: z.string().datetime().optional(),
++      desde: z.string().optional(),
++      hasta: z.string().optional(),
+     }))
+     .mutation(({ input }) => {
+       const db = getDb();
+       const conditions = [];
+-      if (input.desde) conditions.push(gte(nebulizadorTemperatura.fechaLectura, new Date(input.desde)));
+-      if (input.hasta) conditions.push(lte(nebulizadorTemperatura.fechaLectura, new Date(input.hasta)));
++      if (input.desde) conditions.push(gte(nebulizadorTemperatura.fechaLectura, input.desde));
++      if (input.hasta) conditions.push(lte(nebulizadorTemperatura.fechaLectura, input.hasta));
+       return db.select().from(nebulizadorTemperatura)
+         .where(conditions.length > 0 ? and(...conditions) : undefined)
+         .orderBy(desc(nebulizadorTemperatura.fechaLectura));
+diff --git a/api/routers/riego-router.ts b/api/routers/riego-router.ts
+index f328b80..c4d3e86 100644
+--- a/api/routers/riego-router.ts
++++ b/api/routers/riego-router.ts
+@@ -24,12 +24,12 @@ export const riegoRouter = createRouter({
+     return db.select().from(riegoTempSuelo).orderBy(desc(riegoTempSuelo.fechaLectura)).limit(50);
+   }),
+   tempSueloRango: publicQuery
+-    .input(z.object({ desde: z.string().datetime().optional(), hasta: z.string().datetime().optional() }))
++    .input(z.object({ desde: z.string().optional(), hasta: z.string().optional() }))
+     .mutation(({ input }) => {
+       const db = getDb();
+       const conditions = [];
+-      if (input.desde) conditions.push(gte(riegoTempSuelo.fechaLectura, new Date(input.desde)));
+-      if (input.hasta) conditions.push(lte(riegoTempSuelo.fechaLectura, new Date(input.hasta)));
++      if (input.desde) conditions.push(gte(riegoTempSuelo.fechaLectura, input.desde));
++      if (input.hasta) conditions.push(lte(riegoTempSuelo.fechaLectura, input.hasta));
+       return db.select().from(riegoTempSuelo).where(conditions.length > 0 ? and(...conditions) : undefined).orderBy(desc(riegoTempSuelo.fechaLectura));
+     }),
+   tempSueloInsertar: publicQuery
+@@ -55,12 +55,12 @@ export const riegoRouter = createRouter({
+     return db.select().from(riegoTempAmbiente).orderBy(desc(riegoTempAmbiente.fechaLectura)).limit(50);
+   }),
+   tempAmbienteRango: publicQuery
+-    .input(z.object({ desde: z.string().datetime().optional(), hasta: z.string().datetime().optional() }))
++    .input(z.object({ desde: z.string().optional(), hasta: z.string().optional() }))
+     .mutation(({ input }) => {
+       const db = getDb();
+       const conditions = [];
+-      if (input.desde) conditions.push(gte(riegoTempAmbiente.fechaLectura, new Date(input.desde)));
+-      if (input.hasta) conditions.push(lte(riegoTempAmbiente.fechaLectura, new Date(input.hasta)));
++      if (input.desde) conditions.push(gte(riegoTempAmbiente.fechaLectura, input.desde));
++      if (input.hasta) conditions.push(lte(riegoTempAmbiente.fechaLectura, input.hasta));
+       return db.select().from(riegoTempAmbiente).where(conditions.length > 0 ? and(...conditions) : undefined).orderBy(desc(riegoTempAmbiente.fechaLectura));
+     }),
+   tempAmbienteInsertar: publicQuery
+@@ -86,12 +86,12 @@ export const riegoRouter = createRouter({
+     return db.select().from(riegoHumAmbiente).orderBy(desc(riegoHumAmbiente.fechaLectura)).limit(50);
+   }),
+   humAmbienteRango: publicQuery
+-    .input(z.object({ desde: z.string().datetime().optional(), hasta: z.string().datetime().optional() }))
++    .input(z.object({ desde: z.string().optional(), hasta: z.string().optional() }))
+     .mutation(({ input }) => {
+       const db = getDb();
+       const conditions = [];
+-      if (input.desde) conditions.push(gte(riegoHumAmbiente.fechaLectura, new Date(input.desde)));
+-      if (input.hasta) conditions.push(lte(riegoHumAmbiente.fechaLectura, new Date(input.hasta)));
++      if (input.desde) conditions.push(gte(riegoHumAmbiente.fechaLectura, input.desde));
++      if (input.hasta) conditions.push(lte(riegoHumAmbiente.fechaLectura, input.hasta));
+       return db.select().from(riegoHumAmbiente).where(conditions.length > 0 ? and(...conditions) : undefined).orderBy(desc(riegoHumAmbiente.fechaLectura));
+     }),
+   humAmbienteInsertar: publicQuery
+@@ -117,12 +117,12 @@ export const riegoRouter = createRouter({
+     return db.select().from(riegoHumSuelo).orderBy(desc(riegoHumSuelo.fechaLectura)).limit(50);
+   }),
+   humSueloRango: publicQuery
+-    .input(z.object({ desde: z.string().datetime().optional(), hasta: z.string().datetime().optional() }))
++    .input(z.object({ desde: z.string().optional(), hasta: z.string().optional() }))
+     .mutation(({ input }) => {
+       const db = getDb();
+       const conditions = [];
+-      if (input.desde) conditions.push(gte(riegoHumSuelo.fechaLectura, new Date(input.desde)));
+-      if (input.hasta) conditions.push(lte(riegoHumSuelo.fechaLectura, new Date(input.hasta)));
++      if (input.desde) conditions.push(gte(riegoHumSuelo.fechaLectura, input.desde));
++      if (input.hasta) conditions.push(lte(riegoHumSuelo.fechaLectura, input.hasta));
+       return db.select().from(riegoHumSuelo).where(conditions.length > 0 ? and(...conditions) : undefined).orderBy(desc(riegoHumSuelo.fechaLectura));
+     }),
+   humSueloInsertar: publicQuery
+@@ -148,12 +148,12 @@ export const riegoRouter = createRouter({
+     return db.select().from(riegoPotasio).orderBy(desc(riegoPotasio.fechaLectura)).limit(50);
+   }),
+   potasioRango: publicQuery
+-    .input(z.object({ desde: z.string().datetime().optional(), hasta: z.string().datetime().optional() }))
++    .input(z.object({ desde: z.string().optional(), hasta: z.string().optional() }))
+     .mutation(({ input }) => {
+       const db = getDb();
+       const conditions = [];
+-      if (input.desde) conditions.push(gte(riegoPotasio.fechaLectura, new Date(input.desde)));
+-      if (input.hasta) conditions.push(lte(riegoPotasio.fechaLectura, new Date(input.hasta)));
++      if (input.desde) conditions.push(gte(riegoPotasio.fechaLectura, input.desde));
++      if (input.hasta) conditions.push(lte(riegoPotasio.fechaLectura, input.hasta));
+       return db.select().from(riegoPotasio).where(conditions.length > 0 ? and(...conditions) : undefined).orderBy(desc(riegoPotasio.fechaLectura));
+     }),
+   potasioInsertar: publicQuery
+@@ -179,12 +179,12 @@ export const riegoRouter = createRouter({
+     return db.select().from(riegoFosforo).orderBy(desc(riegoFosforo.fechaLectura)).limit(50);
+   }),
+   fosforoRango: publicQuery
+-    .input(z.object({ desde: z.string().datetime().optional(), hasta: z.string().datetime().optional() }))
++    .input(z.object({ desde: z.string().optional(), hasta: z.string().optional() }))
+     .mutation(({ input }) => {
+       const db = getDb();
+       const conditions = [];
+-      if (input.desde) conditions.push(gte(riegoFosforo.fechaLectura, new Date(input.desde)));
+-      if (input.hasta) conditions.push(lte(riegoFosforo.fechaLectura, new Date(input.hasta)));
++      if (input.desde) conditions.push(gte(riegoFosforo.fechaLectura, input.desde));
++      if (input.hasta) conditions.push(lte(riegoFosforo.fechaLectura, input.hasta));
+       return db.select().from(riegoFosforo).where(conditions.length > 0 ? and(...conditions) : undefined).orderBy(desc(riegoFosforo.fechaLectura));
+     }),
+   fosforoInsertar: publicQuery
+@@ -210,12 +210,12 @@ export const riegoRouter = createRouter({
+     return db.select().from(riegoNitrogeno).orderBy(desc(riegoNitrogeno.fechaLectura)).limit(50);
+   }),
+   nitrogenoRango: publicQuery
+-    .input(z.object({ desde: z.string().datetime().optional(), hasta: z.string().datetime().optional() }))
++    .input(z.object({ desde: z.string().optional(), hasta: z.string().optional() }))
+     .mutation(({ input }) => {
+       const db = getDb();
+       const conditions = [];
+-      if (input.desde) conditions.push(gte(riegoNitrogeno.fechaLectura, new Date(input.desde)));
+-      if (input.hasta) conditions.push(lte(riegoNitrogeno.fechaLectura, new Date(input.hasta)));
++      if (input.desde) conditions.push(gte(riegoNitrogeno.fechaLectura, input.desde));
++      if (input.hasta) conditions.push(lte(riegoNitrogeno.fechaLectura, input.hasta));
+       return db.select().from(riegoNitrogeno).where(conditions.length > 0 ? and(...conditions) : undefined).orderBy(desc(riegoNitrogeno.fechaLectura));
+     }),
+   nitrogenoInsertar: publicQuery
+diff --git a/db/schema.ts b/db/schema.ts
+index cded5f8..0599874 100644
+--- a/db/schema.ts
++++ b/db/schema.ts
+@@ -40,38 +40,38 @@ export type InsertUser = typeof users.$inferInsert;
+ export const co2Zona1Temperatura = mysqlTable("co2_zona1_temperatura", {
+   id: serial("id").primaryKey(),
+   temperatura: float("temperatura").notNull(),
+-  fechaLectura: timestamp("fecha_lectura").defaultNow().notNull(),
++  fechaLectura: timestamp("fecha_lectura", { mode: "string" }).defaultNow().notNull(),
+ });
+ 
+ export const co2Zona1Humedad = mysqlTable("co2_zona1_humedad", {
+   id: serial("id").primaryKey(),
+   humedad: float("humedad").notNull(),
+-  fechaLectura: timestamp("fecha_lectura").defaultNow().notNull(),
++  fechaLectura: timestamp("fecha_lectura", { mode: "string" }).defaultNow().notNull(),
+ });
+ 
+ export const co2Zona1Concentracion = mysqlTable("co2_zona1_concentracion", {
+   id: serial("id").primaryKey(),
+   co2Ppm: float("co2_ppm").notNull(),
+-  fechaLectura: timestamp("fecha_lectura").defaultNow().notNull(),
++  fechaLectura: timestamp("fecha_lectura", { mode: "string" }).defaultNow().notNull(),
+ });
+ 
+ // ── Zona 2 ──
+ export const co2Zona2Temperatura = mysqlTable("co2_zona2_temperatura", {
+   id: serial("id").primaryKey(),
+   temperatura: float("temperatura").notNull(),
+-  fechaLectura: timestamp("fecha_lectura").defaultNow().notNull(),
++  fechaLectura: timestamp("fecha_lectura", { mode: "string" }).defaultNow().notNull(),
+ });
+ 
+ export const co2Zona2Humedad = mysqlTable("co2_zona2_humedad", {
+   id: serial("id").primaryKey(),
+   humedad: float("humedad").notNull(),
+-  fechaLectura: timestamp("fecha_lectura").defaultNow().notNull(),
++  fechaLectura: timestamp("fecha_lectura", { mode: "string" }).defaultNow().notNull(),
+ });
+ 
+ export const co2Zona2Concentracion = mysqlTable("co2_zona2_concentracion", {
+   id: serial("id").primaryKey(),
+   co2Ppm: float("co2_ppm").notNull(),
+-  fechaLectura: timestamp("fecha_lectura").defaultNow().notNull(),
++  fechaLectura: timestamp("fecha_lectura", { mode: "string" }).defaultNow().notNull(),
+ });
+ 
+ export type Co2Zona1Temperatura = typeof co2Zona1Temperatura.$inferSelect;
+@@ -91,13 +91,13 @@ export type Co2Zona2Concentracion = typeof co2Zona2Concentracion.$inferSelect;
+ export const nebulizadorHumedad = mysqlTable("nebulizador_humedad", {
+   id: serial("id").primaryKey(),
+   humedad: float("humedad").notNull(),
+-  fechaLectura: timestamp("fecha_lectura").defaultNow().notNull(),
++  fechaLectura: timestamp("fecha_lectura", { mode: "string" }).defaultNow().notNull(),
+ });
+ 
+ export const nebulizadorTemperatura = mysqlTable("nebulizador_temperatura", {
+   id: serial("id").primaryKey(),
+   temperatura: float("temperatura").notNull(),
+-  fechaLectura: timestamp("fecha_lectura").defaultNow().notNull(),
++  fechaLectura: timestamp("fecha_lectura", { mode: "string" }).defaultNow().notNull(),
+ });
+ 
+ // Estado de la bomba reportado por el dispositivo (ID 25).
+@@ -107,7 +107,7 @@ export const nebulizadorBomba = mysqlTable("nebulizador_bomba", {
+   id: serial("id").primaryKey(),
+   estado: int("estado").notNull().default(0),
+   sensoresValidos: int("sensores_validos").notNull().default(0),
+-  fechaLectura: timestamp("fecha_lectura").defaultNow().notNull(),
++  fechaLectura: timestamp("fecha_lectura", { mode: "string" }).defaultNow().notNull(),
+ });
+ 
+ // Control manual de los aspersores/nebulizadores (append-only).
+@@ -142,14 +142,14 @@ export const iluminacionPpfd = mysqlTable("iluminacion_ppfd", {
+   id: serial("id").primaryKey(),
+   ppfd: float("ppfd").notNull(),
+   focoEstado: float("foco_estado").notNull().default(0),
+-  fechaLectura: timestamp("fecha_lectura").defaultNow().notNull(),
++  fechaLectura: timestamp("fecha_lectura", { mode: "string" }).defaultNow().notNull(),
+ });
+ 
+ export const iluminacionDli = mysqlTable("iluminacion_dli", {
+   id: serial("id").primaryKey(),
+   dliTotal: float("dli_total").notNull(),
+   dliBrutoTotal: float("dli_bruto_total").notNull().default(0),
+-  fechaLectura: timestamp("fecha_lectura").defaultNow().notNull(),
++  fechaLectura: timestamp("fecha_lectura", { mode: "string" }).defaultNow().notNull(),
+ });
+ 
+ export const iluminacionEspectro = mysqlTable("iluminacion_espectro", {
+@@ -162,7 +162,7 @@ export const iluminacionEspectro = mysqlTable("iluminacion_espectro", {
+   ch5: float("ch5").notNull().default(0),
+   ch6: float("ch6").notNull().default(0),
+   ch7: float("ch7").notNull().default(0),
+-  fechaLectura: timestamp("fecha_lectura").defaultNow().notNull(),
++  fechaLectura: timestamp("fecha_lectura", { mode: "string" }).defaultNow().notNull(),
+ });
+ 
+ // DLI por canales (IDs 16-19 del datalogger)
+@@ -176,7 +176,7 @@ export const iluminacionDliCanales = mysqlTable("iluminacion_dli_canales", {
+   ch5: float("ch5").notNull().default(0),
+   ch6: float("ch6").notNull().default(0),
+   ch7: float("ch7").notNull().default(0),
+-  fechaLectura: timestamp("fecha_lectura").defaultNow().notNull(),
++  fechaLectura: timestamp("fecha_lectura", { mode: "string" }).defaultNow().notNull(),
+ });
+ 
+ export type IluminacionPpfd = typeof iluminacionPpfd.$inferSelect;
+@@ -195,43 +195,43 @@ export type IluminacionDliCanales = typeof iluminacionDliCanales.$inferSelect;
+ export const riegoTempSuelo = mysqlTable("riego_temp_suelo", {
+   id: serial("id").primaryKey(),
+   temperaturaSuelo: float("temperatura_suelo").notNull(),
+-  fechaLectura: timestamp("fecha_lectura").defaultNow().notNull(),
++  fechaLectura: timestamp("fecha_lectura", { mode: "string" }).defaultNow().notNull(),
+ });
+ 
+ export const riegoTempAmbiente = mysqlTable("riego_temp_ambiente", {
+   id: serial("id").primaryKey(),
+   temperaturaAmbiente: float("temperatura_ambiente").notNull(),
+-  fechaLectura: timestamp("fecha_lectura").defaultNow().notNull(),
++  fechaLectura: timestamp("fecha_lectura", { mode: "string" }).defaultNow().notNull(),
+ });
+ 
+ export const riegoHumAmbiente = mysqlTable("riego_hum_ambiente", {
+   id: serial("id").primaryKey(),
+   humedadAmbiente: float("humedad_ambiente").notNull(),
+-  fechaLectura: timestamp("fecha_lectura").defaultNow().notNull(),
++  fechaLectura: timestamp("fecha_lectura", { mode: "string" }).defaultNow().notNull(),
+ });
+ 
+ export const riegoHumSuelo = mysqlTable("riego_hum_suelo", {
+   id: serial("id").primaryKey(),
+   humedadSuelo: float("humedad_suelo").notNull(),
+-  fechaLectura: timestamp("fecha_lectura").defaultNow().notNull(),
++  fechaLectura: timestamp("fecha_lectura", { mode: "string" }).defaultNow().notNull(),
+ });
+ 
+ export const riegoPotasio = mysqlTable("riego_potasio", {
+   id: serial("id").primaryKey(),
+   potasio: float("potasio").notNull(),
+-  fechaLectura: timestamp("fecha_lectura").defaultNow().notNull(),
++  fechaLectura: timestamp("fecha_lectura", { mode: "string" }).defaultNow().notNull(),
+ });
+ 
+ export const riegoFosforo = mysqlTable("riego_fosforo", {
+   id: serial("id").primaryKey(),
+   fosforo: float("fosforo").notNull(),
+-  fechaLectura: timestamp("fecha_lectura").defaultNow().notNull(),
++  fechaLectura: timestamp("fecha_lectura", { mode: "string" }).defaultNow().notNull(),
+ });
+ 
+ export const riegoNitrogeno = mysqlTable("riego_nitrogeno", {
+   id: serial("id").primaryKey(),
+   nitrogeno: float("nitrogeno").notNull(),
+-  fechaLectura: timestamp("fecha_lectura").defaultNow().notNull(),
++  fechaLectura: timestamp("fecha_lectura", { mode: "string" }).defaultNow().notNull(),
+ });
+ 
+ export type RiegoTempSuelo = typeof riegoTempSuelo.$inferSelect;
+diff --git a/db/seed.ts b/db/seed.ts
+index e2127f7..93714e0 100644
+--- a/db/seed.ts
++++ b/db/seed.ts
+@@ -15,9 +15,19 @@ async function seed() {
+   console.log("Seeding database with sample greenhouse data...");
+ 
+   const now = new Date();
+-  const timestamps: Date[] = [];
++  // Las columnas fecha_lectura usan mode:"string": guardamos la marca como
++  // cadena de reloj de pared "YYYY-MM-DD HH:mm:ss" en hora local, igual que
++  // hace el datalogger. Asi se muestran identicas en graficas y tablas.
++  const toMySql = (d: Date) => {
++    const p = (n: number) => String(n).padStart(2, "0");
++    return (
++      `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ` +
++      `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
++    );
++  };
++  const timestamps: string[] = [];
+   for (let i = 29; i >= 0; i--) {
+-    timestamps.push(new Date(now.getTime() - i * 5 * 60000));
++    timestamps.push(toMySql(new Date(now.getTime() - i * 5 * 60000)));
+   }
+ 
+   // ========== CO2 Zona 1 ==========
+diff --git a/src/components/HistoricTable.tsx b/src/components/HistoricTable.tsx
+index f57d677..b5928b8 100644
+--- a/src/components/HistoricTable.tsx
++++ b/src/components/HistoricTable.tsx
+@@ -1,5 +1,4 @@
+-import { format } from "date-fns";
+-import { es } from "date-fns/locale";
++import { formatFecha } from "@/lib/datetime";
+ 
+ interface TableColumn {
+   key: string;
+@@ -60,8 +59,12 @@ export default function HistoricTable({ title, data, columns, loading }: Histori
+                   let displayValue: string;
+                   if (col.format) {
+                     displayValue = col.format(rawValue);
+-                  } else if (rawValue instanceof Date) {
+-                    displayValue = format(rawValue, "dd/MM/yyyy HH:mm:ss", { locale: es });
++                  } else if (
++                    rawValue instanceof Date ||
++                    (typeof rawValue === "string" &&
++                      /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}/.test(rawValue))
++                  ) {
++                    displayValue = formatFecha(rawValue);
+                   } else {
+                     displayValue = String(rawValue ?? "—");
+                   }
+diff --git a/src/lib/datetime.ts b/src/lib/datetime.ts
+new file mode 100644
+index 0000000..2b46764
+--- /dev/null
++++ b/src/lib/datetime.ts
+@@ -0,0 +1,82 @@
++import { format as dfFormat } from "date-fns";
++import { es } from "date-fns/locale";
++
++// ════════════════════════════════════════════════════════════════════════
++// Manejo de fechas de las lecturas
++// ════════════════════════════════════════════════════════════════════════
++// El backend entrega `fecha_lectura` como una CADENA de reloj de pared
++// "YYYY-MM-DD HH:mm:ss" exactamente como esta en la base de datos (ver
++// `api/queries/connection.ts` -> dateStrings y `db/schema.ts` -> mode:"string").
++//
++// El objetivo es que la hora mostrada en graficas y tablas sea EXACTAMENTE la
++// que quedo registrada en la BD, sin aplicar ninguna conversion de zona
++// horaria. Para lograrlo construimos el Date a partir de los componentes
++// literales (ano, mes, dia, hora, minuto, segundo) usando el constructor en
++// hora local. Asi date-fns formatea esos mismos numeros tal cual.
++
++/**
++ * Convierte el valor que llega del backend en un Date cuyos componentes
++ * locales coinciden con los numeros guardados en la base de datos.
++ *
++ * - Cadena de reloj de pared "YYYY-MM-DD HH:mm:ss" (sin zona): se interpreta
++ *   literalmente (sin conversion de huso). Este es el caso de `fecha_lectura`.
++ * - Cadena ISO con zona ("...Z" o "+/-HH:MM"): se interpreta como instante
++ *   real (p. ej. los ciclos creados con `toISOString()`), y al formatear se
++ *   muestra en la hora local del navegador.
++ * - Date: se devuelve tal cual.
++ */
++export function parseFechaLectura(value: unknown): Date {
++  if (value instanceof Date) return value;
++
++  if (typeof value === "string") {
++    const trimmed = value.trim();
++    const tieneZona = /[zZ]$|[+-]\d{2}:?\d{2}$/.test(trimmed);
++
++    if (!tieneZona) {
++      const m = trimmed.match(
++        /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?$/,
++      );
++      if (m) {
++        const [, y, mo, d, h, mi, s] = m;
++        return new Date(
++          Number(y),
++          Number(mo) - 1,
++          Number(d),
++          Number(h),
++          Number(mi),
++          Number(s ?? "0"),
++        );
++      }
++    }
++
++    const parsed = new Date(trimmed);
++    if (!isNaN(parsed.getTime())) return parsed;
++  }
++
++  return new Date(NaN);
++}
++
++/**
++ * Formatea una `fecha_lectura` para mostrarla. Por defecto usa el formato
++ * completo de las tablas; pasa un patron distinto (p. ej. "HH:mm") para los
++ * ejes de tiempo de las graficas.
++ */
++export function formatFecha(value: unknown, pattern = "dd/MM/yyyy HH:mm:ss"): string {
++  const d = parseFechaLectura(value);
++  if (isNaN(d.getTime())) return value == null ? "—" : String(value);
++  return dfFormat(d, pattern, { locale: es });
++}
++
++/**
++ * Convierte un Date a cadena de reloj de pared "YYYY-MM-DD HH:mm:ss" en hora
++ * local (sin zona) — el mismo formato con el que la base de datos guarda las
++ * marcas de tiempo. Util para construir los limites de los filtros por rango
++ * de modo que se comparen reloj-de-pared contra reloj-de-pared.
++ */
++export function toWallClock(d: Date): string {
++  const p = (n: number) => String(n).padStart(2, "0");
++  return (
++    `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ` +
++    `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
++  );
++}
+diff --git a/src/pages/Co2.tsx b/src/pages/Co2.tsx
+index 6c7bebb..69572a6 100644
+--- a/src/pages/Co2.tsx
++++ b/src/pages/Co2.tsx
+@@ -6,8 +6,7 @@ import GaugeIndicator from "@/components/GaugeIndicator";
+ import HistoricTable from "@/components/HistoricTable";
+ import CsvExport from "@/components/CsvExport";
+ import { useChartColors } from "@/hooks/useChartColors";
+-import { format } from "date-fns";
+-import { es } from "date-fns/locale";
++import { formatFecha } from "@/lib/datetime";
+ import {
+   Chart as ChartJS, CategoryScale, LinearScale, PointElement,
+   LineElement, BarElement, Title, Tooltip, Legend, Filler,
+@@ -89,10 +88,7 @@ export default function Co2() {
+   const toLine = (data: Array<Record<string, unknown>> | undefined, key: string, color: string, label: string, unit: string) => {
+     const rev = [...(data || [])].reverse();
+     return {
+-      labels: rev.map((d) => {
+-        const dt = d.fechaLectura instanceof Date ? d.fechaLectura : new Date(d.fechaLectura as string);
+-        return format(dt, "HH:mm", { locale: es });
+-      }),
++      labels: rev.map((d) => formatFecha(d.fechaLectura, "HH:mm")),
+       datasets: [{
+         label: `${label} (${unit})`, data: rev.map((d) => Number(d[key] || 0)),
+         borderColor: color, backgroundColor: color + "18", borderWidth: 2,
+@@ -107,11 +103,11 @@ export default function Co2() {
+     { label: "Alto", max: 2000, color: "#ef4444", bgClass: "bg-red-500" },
+   ];
+ 
+-  const df = (v: unknown) => v instanceof Date ? format(v, "dd/MM/yyyy HH:mm:ss", { locale: es }) : String(v);
++  const df = (v: unknown) => formatFecha(v);
+ 
+   const handleExport = async (variable: string, desde: string, hasta: string) => {
+-    const d0 = desde ? new Date(desde + "T00:00:00").toISOString() : undefined;
+-    const d1 = hasta ? new Date(hasta + "T23:59:59").toISOString() : undefined;
++    const d0 = desde ? `${desde} 00:00:00` : undefined;
++    const d1 = hasta ? `${hasta} 23:59:59` : undefined;
+     if (variable.startsWith("z1_")) {
+       const v = variable.replace("z1_", "");
+       if (v === "temperatura") return m.z1t.mutateAsync({ desde: d0, hasta: d1 });
+diff --git a/src/pages/Iluminacion.tsx b/src/pages/Iluminacion.tsx
+index 4092dcf..6d670c2 100644
+--- a/src/pages/Iluminacion.tsx
++++ b/src/pages/Iluminacion.tsx
+@@ -1,7 +1,6 @@
+ import { useEffect, useMemo, useState, useCallback, useRef } from "react";
+ import { trpc } from "@/providers/trpc";
+-import { format } from "date-fns";
+-import { es } from "date-fns/locale";
++import { formatFecha, toWallClock, parseFechaLectura } from "@/lib/datetime";
+ import Layout from "@/components/Layout";
+ import {
+   Chart as ChartJS,
+@@ -151,8 +150,7 @@ function descargarCSV(nombre: string, filas: Record<string, unknown>[]) {
+ }
+ 
+ // Formato de fecha para tablas
+-const fmtFecha = (v: unknown) =>
+-  v instanceof Date ? format(v, "dd/MM/yyyy HH:mm:ss", { locale: es }) : format(new Date(String(v)), "dd/MM/yyyy HH:mm:ss", { locale: es });
++const fmtFecha = (v: unknown) => formatFecha(v);
+ 
+ // ═══════════════════════════════════════════════════════════════
+ // ILUMINACION PAGE - PhytoSense-style with all 4 sub-tabs
+@@ -935,7 +933,7 @@ function HistorialTab({
+     toast("🗑 Ciclo borrado", "var(--re)");
+   };
+ 
+-  const fmtCorta = (iso: string) => format(new Date(iso), "dd/MM HH:mm", { locale: es });
++  const fmtCorta = (iso: string) => formatFecha(iso, "dd/MM HH:mm");
+ 
+   return (
+     <>
+@@ -1062,8 +1060,14 @@ function Dataset({ icon, titulo, filas, loading, nombreArchivo }: {
+ 
+ // ── Detalle de un ciclo: lee las lecturas de la BD dentro de su ventana ──
+ function CicloDetalle({ ciclo }: { ciclo: Ciclo }) {
+-  const transf = trpc.iluminacion.lecturasTransf.useQuery({ desde: ciclo.inicio, hasta: ciclo.fin });
+-  const raw = trpc.iluminacion.lecturasRaw.useQuery({ desde: ciclo.inicio, hasta: ciclo.fin });
++  // Los limites del ciclo se guardan como ISO (instante). La BD compara contra
++  // una marca de reloj de pared, asi que convertimos el instante a la hora
++  // local "YYYY-MM-DD HH:mm:ss" para comparar reloj-de-pared contra
++  // reloj-de-pared, sin desfases de zona horaria.
++  const desde = toWallClock(parseFechaLectura(ciclo.inicio));
++  const hasta = toWallClock(parseFechaLectura(ciclo.fin));
++  const transf = trpc.iluminacion.lecturasTransf.useQuery({ desde, hasta });
++  const raw = trpc.iluminacion.lecturasRaw.useQuery({ desde, hasta });
+ 
+   const transfFilas = useMemo(() => (transf.data ?? []).map((d: any) => ({
+     "Fecha/Hora": fmtFecha(d.fechaLectura),
+diff --git a/src/pages/Nebulizador.tsx b/src/pages/Nebulizador.tsx
+index 3f63925..789cb17 100644
+--- a/src/pages/Nebulizador.tsx
++++ b/src/pages/Nebulizador.tsx
+@@ -4,8 +4,7 @@ import Layout from "@/components/Layout";
+ import HistoricTable from "@/components/HistoricTable";
+ import CsvExport from "@/components/CsvExport";
+ import { useChartColors } from "@/hooks/useChartColors";
+-import { format } from "date-fns";
+-import { es } from "date-fns/locale";
++import { formatFecha } from "@/lib/datetime";
+ import { Droplets, Power, Settings2 } from "lucide-react";
+ import {
+   Chart as ChartJS,
+@@ -68,10 +67,7 @@ export default function Nebulizador() {
+   const humChartData = useMemo(() => {
+     const data = [...(humHistorico.data || [])].reverse();
+     return {
+-      labels: data.map((d) => {
+-        const date = d.fechaLectura instanceof Date ? d.fechaLectura : new Date(d.fechaLectura);
+-        return format(date, "HH:mm", { locale: es });
+-      }),
++      labels: data.map((d) => formatFecha(d.fechaLectura, "HH:mm")),
+       datasets: [{
+         label: "Humedad (%)",
+         data: data.map((d) => d.humedad),
+@@ -90,10 +86,7 @@ export default function Nebulizador() {
+   const tempChartData = useMemo(() => {
+     const data = [...(tempHistorico.data || [])].reverse();
+     return {
+-      labels: data.map((d) => {
+-        const date = d.fechaLectura instanceof Date ? d.fechaLectura : new Date(d.fechaLectura);
+-        return format(date, "HH:mm", { locale: es });
+-      }),
++      labels: data.map((d) => formatFecha(d.fechaLectura, "HH:mm")),
+       datasets: [{
+         label: "Temperatura (°C)",
+         data: data.map((d) => d.temperatura),
+@@ -151,8 +144,8 @@ export default function Nebulizador() {
+ 
+   // ── Exportacion CSV ──
+   const handleExport = async (variable: string, desde: string, hasta: string) => {
+-    const desdeISO = desde ? new Date(desde + "T00:00:00").toISOString() : undefined;
+-    const hastaISO = hasta ? new Date(hasta + "T23:59:59").toISOString() : undefined;
++    const desdeISO = desde ? `${desde} 00:00:00` : undefined;
++    const hastaISO = hasta ? `${hasta} 23:59:59` : undefined;
+     if (variable === "temperatura") {
+       return await tempRango.mutateAsync({ desde: desdeISO, hasta: hastaISO });
+     }
+@@ -171,8 +164,7 @@ export default function Nebulizador() {
+     return filas as Record<string, unknown>[];
+   };
+ 
+-  const dateFormat = (v: unknown) =>
+-    v instanceof Date ? format(v, "dd/MM/yyyy HH:mm:ss", { locale: es }) : String(v);
++  const dateFormat = (v: unknown) => formatFecha(v);
+ 
+   return (
+     <Layout title="Nebulizador" subtitle="Control de humedad">
+diff --git a/src/pages/SistemaRiego.tsx b/src/pages/SistemaRiego.tsx
+index 3808988..790e3e5 100644
+--- a/src/pages/SistemaRiego.tsx
++++ b/src/pages/SistemaRiego.tsx
+@@ -4,8 +4,7 @@ import Layout from "@/components/Layout";
+ import HistoricTable from "@/components/HistoricTable";
+ import CsvExport from "@/components/CsvExport";
+ import { useChartColors } from "@/hooks/useChartColors";
+-import { format } from "date-fns";
+-import { es } from "date-fns/locale";
++import { formatFecha } from "@/lib/datetime";
+ import {
+   Chart as ChartJS,
+   CategoryScale,
+@@ -46,10 +45,7 @@ function ChartSection({ title, color, data, unit, chartType = "line" }: ChartSec
+   const chartData = useMemo(() => {
+     const reversed = [...data].reverse();
+     return {
+-      labels: reversed.map((d) => {
+-        const date = d.fechaLectura instanceof Date ? d.fechaLectura : new Date(d.fechaLectura);
+-        return format(date, "HH:mm", { locale: es });
+-      }),
++      labels: reversed.map((d) => formatFecha(d.fechaLectura, "HH:mm")),
+       datasets: [{
+         label: `${title} (${unit})`,
+         data: reversed.map((d) => d.value),
+@@ -119,12 +115,11 @@ export default function SistemaRiego() {
+     return data.map((d) => ({ fechaLectura: d.fechaLectura as Date | string, value: Number(d[valueKey] || 0) }));
+   };
+ 
+-  const dateFormat = (v: unknown) =>
+-    v instanceof Date ? format(v, "dd/MM/yyyy HH:mm:ss", { locale: es }) : String(v);
++  const dateFormat = (v: unknown) => formatFecha(v);
+ 
+   const handleExport = async (variable: string, desde: string, hasta: string) => {
+-    const desdeISO = desde ? new Date(desde + "T00:00:00").toISOString() : undefined;
+-    const hastaISO = hasta ? new Date(hasta + "T23:59:59").toISOString() : undefined;
++    const desdeISO = desde ? `${desde} 00:00:00` : undefined;
++    const hastaISO = hasta ? `${hasta} 23:59:59` : undefined;
+ 
+     switch (variable) {
+       case "tempSuelo": return await tempSueloRangoMut.mutateAsync({ desde: desdeISO, hasta: hastaISO });
